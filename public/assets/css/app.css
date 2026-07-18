@@ -1,0 +1,20 @@
+/* Beetle Analytics Custom Stylesheet */
+
+:root {
+    --color-navy: #1E2A3A;
+    --color-navy-deep: #141C27;
+    --color-orange: #F26B3A;
+    --color-teal: #0E7C7B;
+    --color-ink: #1E293B;
+    --color-muted: #64748B;
+    --color-card-tint: #F4F6F8;
+    --color-card-tint-warm: #FDF1EC;
+}
+
+/* Micro-animations and layout corrections */
+.hover-scale {
+    transition: transform 0.2s ease-in-out;
+}
+.hover-scale:hover {
+    transform: scale(1.02);
+}
