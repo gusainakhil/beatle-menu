@@ -5,9 +5,11 @@ namespace App\Models;
 use App\Core\Model;
 
 class ActivityLog extends Model {
+    private const ENTITY_TYPE_MAX_LENGTH = 100;
+
     public static function log(string $businessId, ?string $userId, string $action, string $description): bool {
         $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
-        $ua = $_SERVER['HTTP_USER_AGENT'] ?? 'CLI';
+        $ua = substr($_SERVER['HTTP_USER_AGENT'] ?? 'CLI', 0, self::ENTITY_TYPE_MAX_LENGTH);
         
         $db = self::getDb();
         $stmt = $db->prepare("
