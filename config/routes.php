@@ -30,11 +30,21 @@ return [
         '/qr-codes' => 'QrCodeController@index',
         
         '/settings' => 'SettingsController@index',
+
+        '/api/home' => 'ApiController@home',
+        '/api/orders' => 'ApiController@orders',
+        '/api/order-detail' => 'ApiController@orderDetail',
+        '/api/menu-items' => 'ApiController@menuItems',
+        '/api/tables' => 'ApiController@tables',
     ],
     'POST' => [
         '/login' => 'AuthController@login',
         '/api/register' => 'ApiController@register',
         '/api/login' => 'ApiController@login',
+        '/api/create-order' => 'ApiController@createOrder',
+        '/api/update-order-status' => 'ApiController@updateOrderStatus',
+        '/api/add-order-items' => 'ApiController@addOrderItems',
+        '/api/update-order-item-status' => 'ApiController@updateOrderItemStatus',
         '/qr-codes/generate' => 'QrCodeController@generate',
         '/qr-codes/generate-missing' => 'QrCodeController@generateMissing',
         '/qr-codes/revoke' => 'QrCodeController@revoke',
@@ -43,5 +53,14 @@ return [
     'OPTIONS' => [
         '/api/register' => 'ApiController@options',
         '/api/login' => 'ApiController@options',
+        '/api/home' => 'ApiController@options',
+        '/api/orders' => 'ApiController@options',
+        '/api/order-detail' => 'ApiController@options',
+        '/api/create-order' => 'ApiController@options',
+        '/api/update-order-status' => 'ApiController@options',
+        '/api/add-order-items' => 'ApiController@options',
+        '/api/update-order-item-status' => 'ApiController@options',
+        '/api/menu-items' => 'ApiController@options',
+        '/api/tables' => 'ApiController@options',
     ],
 ];

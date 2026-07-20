@@ -30,23 +30,56 @@ class Business extends Model {
         return $res ?: null;
     }
 
-    public static function findLoginByEmail(string $email): ?array {
+    public static function findLoginByEmail(string $email, ?string $userType = null): ?array {
+        $roleFilter = '';
+        $params = [$email];
+
+        if ($userType !== null && $userType !== '') {
+            $roleFilter = ' AND u.role = ?';
+            $params[] = $userType;
+        }
+
         $stmt = self::getDb()->prepare("
             SELECT
                 b.id,
                 b.business_name AS name,
                 b.email,
                 u.id AS user_id,
+                u.name AS user_name,
+                u.role AS user_type,
                 u.password_hash
             FROM app_user u
             JOIN business b ON u.business_id = b.id
             WHERE u.email = ?
-              AND u.role = 'admin'
+              AND u.role IN ('admin', 'waiter')
+              {$roleFilter}
               AND u.status = 'active'
               AND b.status IN ('active', 'pending_verification')
             LIMIT 1
         ");
-        $stmt->execute([$email]);
+        $stmt->execute($params);
+        $res = $stmt->fetch();
+        return $res ?: null;
+    }
+
+    public static function findApiUserContext(string $userId): ?array {
+        $stmt = self::getDb()->prepare("
+            SELECT
+                b.id AS business_id,
+                b.business_name AS business_name,
+                b.email AS business_email,
+                u.id AS user_id,
+                u.name AS user_name,
+                u.role AS user_type
+            FROM app_user u
+            JOIN business b ON u.business_id = b.id
+            WHERE u.id = ?
+              AND u.role IN ('admin', 'waiter')
+              AND u.status = 'active'
+              AND b.status IN ('active', 'pending_verification')
+            LIMIT 1
+        ");
+        $stmt->execute([$userId]);
         $res = $stmt->fetch();
         return $res ?: null;
     }
