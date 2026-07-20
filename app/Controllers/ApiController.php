@@ -8,10 +8,13 @@ use App\Core\Request;
 use App\Core\Session;
 use App\Core\Validator;
 use App\Models\ActivityLog;
+use App\Models\AppUser;
 use App\Models\Business;
+use App\Models\Category;
 use App\Models\MenuItem;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\QrCode;
 use App\Models\ServiceUnit;
 use PDOException;
 
@@ -216,7 +219,7 @@ class ApiController extends Controller {
         $this->requireApiAuth($request);
 
         $data = $request->all();
-        $orderId = isset($data['order_id']) ? trim((string)$data['order_id']) : '';
+        $orderId = $this->resolveOrderIdFromRequest($data);
 
         if ($orderId === '') {
             $this->json([
@@ -318,7 +321,7 @@ class ApiController extends Controller {
         $this->requireApiAuth($request);
 
         $data = $request->all();
-        $orderId = isset($data['order_id']) ? trim((string)$data['order_id']) : '';
+        $orderId = $this->resolveOrderIdFromRequest($data);
 
         if ($orderId === '' || empty($data['items']) || !is_array($data['items'])) {
             $this->json([
@@ -397,39 +400,7 @@ class ApiController extends Controller {
             $available = filter_var($data['available'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
         }
 
-        $items = array_map(function (array $item): array {
-            $price = (float)$item['price'];
-            $discountPrice = $item['discount_price'] !== null ? (float)$item['discount_price'] : null;
-            $effectivePrice = $discountPrice ?? $price;
-
-            return [
-                'id' => $item['id'],
-                'category_id' => $item['category_id'],
-                'category_name' => $item['category_name'],
-                'name' => $item['name'],
-                'description' => $item['description'],
-                'price' => $price,
-                'price_label' => $this->formatRupees($price),
-                'discount_price' => $discountPrice,
-                'discount_price_label' => $discountPrice !== null ? $this->formatRupees($discountPrice) : null,
-                'effective_price' => $effectivePrice,
-                'effective_price_label' => $this->formatRupees($effectivePrice),
-                'dietary_type' => $item['dietary_type'],
-                'spicy_level' => $item['spicy_level'],
-                'prep_time_minutes' => $item['prep_time_minutes'] !== null ? (int)$item['prep_time_minutes'] : null,
-                'image_url' => $item['image_url'],
-                'gallery_urls' => $this->decodeJsonArray($item['gallery_urls'] ?? null),
-                'is_recommended' => (bool)$item['is_recommended'],
-                'is_best_seller' => (bool)$item['is_best_seller'],
-                'is_todays_special' => (bool)$item['is_todays_special'],
-                'is_available' => (bool)$item['is_available'],
-                'display_order' => (int)$item['display_order'],
-                'sku' => $item['sku'],
-                'barcode' => $item['barcode'],
-                'created_at' => $item['created_at'],
-                'updated_at' => $item['updated_at'],
-            ];
-        }, MenuItem::getApiMenuItems($categoryId, $available));
+        $items = array_map(fn(array $item): array => $this->formatMenuItem($item), MenuItem::getApiMenuItems($categoryId, $available));
 
         $this->json([
             'success' => true,
@@ -442,6 +413,181 @@ class ApiController extends Controller {
         ]);
     }
 
+    public function menuCategories(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        $categories = array_map(function (array $category): array {
+            return [
+                'id' => $category['id'],
+                'name' => $category['name'],
+                'display_order' => (int)$category['display_order'],
+                'is_hidden' => (bool)$category['is_hidden'],
+                'icon' => $category['icon'] ?? 'utensils',
+                'created_at' => $category['created_at'] ?? null,
+                'updated_at' => $category['updated_at'] ?? null,
+            ];
+        }, Category::getApiCategories());
+
+        $this->json([
+            'success' => true,
+            'data' => $categories,
+            'meta' => [
+                'count' => count($categories),
+            ],
+        ]);
+    }
+
+    public function menuItemDetail(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        $data = $request->all();
+        $menuItemId = isset($data['menu_item_id']) ? trim((string)$data['menu_item_id']) : '';
+
+        if ($menuItemId === '') {
+            $this->json([
+                'success' => false,
+                'message' => 'The menu_item_id field is required.',
+            ], 422);
+        }
+
+        $item = MenuItem::getApiMenuItemDetail($menuItemId);
+        if (!$item) {
+            $this->json([
+                'success' => false,
+                'message' => 'Menu item not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'data' => $this->formatMenuItem($item),
+        ]);
+    }
+
+    public function createMenuItem(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        $data = $this->withUploadedMenuImage($request->all());
+        if (empty($data['name'])) {
+            $this->json([
+                'success' => false,
+                'message' => 'The name field is required.',
+            ], 422);
+        }
+
+        try {
+            $item = MenuItem::createApiMenuItem($data);
+        } catch (\InvalidArgumentException $e) {
+            $this->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'Menu item created successfully.',
+            'data' => $this->formatMenuItem($item),
+        ], 201);
+    }
+
+    public function updateMenuItem(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        $data = $this->withUploadedMenuImage($request->all());
+        $menuItemId = isset($data['menu_item_id']) ? trim((string)$data['menu_item_id']) : '';
+
+        if ($menuItemId === '' || empty($data['name'])) {
+            $this->json([
+                'success' => false,
+                'message' => 'The menu_item_id and name fields are required.',
+            ], 422);
+        }
+
+        try {
+            $item = MenuItem::updateApiMenuItem($menuItemId, $data);
+        } catch (\InvalidArgumentException $e) {
+            $this->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+
+        if (!$item) {
+            $this->json([
+                'success' => false,
+                'message' => 'Menu item not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'Menu item updated successfully.',
+            'data' => $this->formatMenuItem($item),
+        ]);
+    }
+
+    public function updateMenuItemAvailability(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        $data = $this->withUploadedMenuImage($request->all());
+        $menuItemId = isset($data['menu_item_id']) ? trim((string)$data['menu_item_id']) : '';
+        $available = filter_var($data['is_available'] ?? null, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+
+        if ($menuItemId === '' || $available === null) {
+            $this->json([
+                'success' => false,
+                'message' => 'The menu_item_id and is_available fields are required.',
+            ], 422);
+        }
+
+        $item = MenuItem::updateApiAvailability($menuItemId, $available, $data['image_url'] ?? null);
+        if (!$item) {
+            $this->json([
+                'success' => false,
+                'message' => 'Menu item not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'Menu item availability updated successfully.',
+            'data' => $this->formatMenuItem($item),
+        ]);
+    }
+
+    public function deleteMenuItem(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        $data = $request->all();
+        $menuItemId = isset($data['menu_item_id']) ? trim((string)$data['menu_item_id']) : '';
+
+        if ($menuItemId === '') {
+            $this->json([
+                'success' => false,
+                'message' => 'The menu_item_id field is required.',
+            ], 422);
+        }
+
+        if (!MenuItem::deleteApiMenuItem($menuItemId)) {
+            $this->json([
+                'success' => false,
+                'message' => 'Menu item not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'Menu item deleted successfully.',
+        ]);
+    }
+
     public function tables(Request $request): void {
         $this->apiHeaders();
         $this->requireApiAuth($request);
@@ -451,26 +597,12 @@ class ApiController extends Controller {
         $status = isset($data['status']) && in_array((string)$data['status'], $allowedStatuses, true)
             ? (string)$data['status']
             : null;
+        $allowedTypes = ['table', 'room'];
+        $type = isset($data['type']) && in_array((string)$data['type'], $allowedTypes, true)
+            ? (string)$data['type']
+            : 'table';
 
-        $tables = array_map(function (array $table): array {
-            $activeOrderTotal = $table['active_order_total'] !== null ? (float)$table['active_order_total'] : null;
-
-            return [
-                'id' => $table['id'],
-                'type' => $table['type'],
-                'number_label' => $table['number_label'],
-                'name' => 'Table ' . $table['number_label'],
-                'status' => $table['status'],
-                'is_active' => $table['status'] === 'occupied' || $table['active_order_id'] !== null,
-                'active_order_id' => $table['active_order_id'],
-                'active_order_number' => $table['active_order_number'],
-                'active_order_status' => $table['active_order_status'],
-                'active_order_total' => $activeOrderTotal,
-                'active_order_total_label' => $activeOrderTotal !== null ? $this->formatRupees($activeOrderTotal) : null,
-                'created_at' => $table['created_at'],
-                'updated_at' => $table['updated_at'],
-            ];
-        }, ServiceUnit::getApiTables($status));
+        $tables = array_map(fn(array $table): array => $this->formatTableRoom($table), ServiceUnit::getApiTables($status, $type));
 
         $this->json([
             'success' => true,
@@ -478,7 +610,461 @@ class ApiController extends Controller {
             'meta' => [
                 'count' => count($tables),
                 'status' => $status,
+                'type' => $type,
             ],
+        ]);
+    }
+
+    public function tableRooms(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        $data = $request->all();
+        $allowedStatuses = ['available', 'occupied', 'disabled'];
+        $allowedTypes = ['table', 'room'];
+        $status = isset($data['status']) && in_array((string)$data['status'], $allowedStatuses, true)
+            ? (string)$data['status']
+            : null;
+        $type = isset($data['type']) && in_array((string)$data['type'], $allowedTypes, true)
+            ? (string)$data['type']
+            : null;
+
+        $rows = array_map(fn(array $row): array => $this->formatTableRoom($row), ServiceUnit::getApiTables($status, $type));
+
+        $this->json([
+            'success' => true,
+            'data' => $rows,
+            'meta' => [
+                'count' => count($rows),
+                'status' => $status,
+                'type' => $type,
+            ],
+        ]);
+    }
+
+    public function tableRoomDetail(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        $data = $request->all();
+        $id = isset($data['table_room_id']) ? trim((string)$data['table_room_id']) : '';
+
+        if ($id === '') {
+            $this->json([
+                'success' => false,
+                'message' => 'The table_room_id field is required.',
+            ], 422);
+        }
+
+        $row = ServiceUnit::getApiDetail($id);
+        if (!$row) {
+            $this->json([
+                'success' => false,
+                'message' => 'Table/room not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'data' => $this->formatTableRoom($row),
+        ]);
+    }
+
+    public function createTableRoom(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        try {
+            $row = ServiceUnit::createApi($request->all());
+        } catch (\InvalidArgumentException $e) {
+            $this->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23000') {
+                $this->json([
+                    'success' => false,
+                    'message' => 'This table/room number already exists.',
+                ], 409);
+            }
+            throw $e;
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'Table/room created successfully.',
+            'data' => $this->formatTableRoom($row),
+        ], 201);
+    }
+
+    public function updateTableRoom(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        $data = $request->all();
+        $id = isset($data['table_room_id']) ? trim((string)$data['table_room_id']) : '';
+
+        if ($id === '') {
+            $this->json([
+                'success' => false,
+                'message' => 'The table_room_id field is required.',
+            ], 422);
+        }
+
+        try {
+            $row = ServiceUnit::updateApi($id, $data);
+        } catch (\InvalidArgumentException $e) {
+            $this->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23000') {
+                $this->json([
+                    'success' => false,
+                    'message' => 'This table/room number already exists.',
+                ], 409);
+            }
+            throw $e;
+        }
+
+        if (!$row) {
+            $this->json([
+                'success' => false,
+                'message' => 'Table/room not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'Table/room updated successfully.',
+            'data' => $this->formatTableRoom($row),
+        ]);
+    }
+
+    public function updateTableRoomStatus(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        $data = $request->all();
+        $id = isset($data['table_room_id']) ? trim((string)$data['table_room_id']) : '';
+        $status = isset($data['status']) ? trim((string)$data['status']) : '';
+
+        if ($id === '' || $status === '') {
+            $this->json([
+                'success' => false,
+                'message' => 'The table_room_id and status fields are required.',
+            ], 422);
+        }
+
+        try {
+            $row = ServiceUnit::updateApiStatus($id, $status);
+        } catch (\InvalidArgumentException $e) {
+            $this->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+
+        if (!$row) {
+            $this->json([
+                'success' => false,
+                'message' => 'Table/room not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'Table/room status updated successfully.',
+            'data' => $this->formatTableRoom($row),
+        ]);
+    }
+
+    public function deleteTableRoom(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        $data = $request->all();
+        $id = isset($data['table_room_id']) ? trim((string)$data['table_room_id']) : '';
+
+        if ($id === '') {
+            $this->json([
+                'success' => false,
+                'message' => 'The table_room_id field is required.',
+            ], 422);
+        }
+
+        try {
+            $deleted = ServiceUnit::deleteApi($id);
+        } catch (\InvalidArgumentException $e) {
+            $this->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23000') {
+                $this->json([
+                    'success' => false,
+                    'message' => 'This table/room is linked with existing records and cannot be deleted.',
+                ], 409);
+            }
+            throw $e;
+        }
+
+        if (!$deleted) {
+            $this->json([
+                'success' => false,
+                'message' => 'Table/room not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'Table/room deleted successfully.',
+        ]);
+    }
+
+    public function updateQrImage(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAuth($request);
+
+        $data = $request->all();
+        $qrId = isset($data['qr_id']) ? trim((string)$data['qr_id']) : '';
+
+        if ($qrId === '' && !empty($data['table_room_id'])) {
+            $qr = QrCode::findActiveByTableRoom((string)$data['table_room_id']);
+            $qrId = $qr['id'] ?? '';
+        }
+
+        if ($qrId === '') {
+            $this->json([
+                'success' => false,
+                'message' => 'The qr_id or table_room_id field is required.',
+            ], 422);
+        }
+
+        $file = $_FILES['image'] ?? $_FILES['qr_image'] ?? null;
+        if (!$file || !is_array($file) || ($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            $this->json([
+                'success' => false,
+                'message' => 'The image field is required.',
+            ], 422);
+        }
+
+        $qr = QrCode::updateImage($qrId, $this->storeUploadedImage($file, 'qr-codes'));
+        if (!$qr) {
+            $this->json([
+                'success' => false,
+                'message' => 'QR code not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'QR image uploaded successfully.',
+            'data' => $this->formatQrCode($qr),
+        ]);
+    }
+
+    public function appUsers(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAdmin($request);
+
+        $data = $request->all();
+        $role = isset($data['role']) ? (string)$data['role'] : null;
+        $status = isset($data['status']) ? (string)$data['status'] : null;
+
+        try {
+            $users = array_map(fn(array $user): array => $this->formatAppUser($user), AppUser::getApiUsers($role, $status));
+        } catch (\InvalidArgumentException $e) {
+            $this->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+
+        $this->json([
+            'success' => true,
+            'data' => $users,
+            'meta' => [
+                'count' => count($users),
+                'role' => $role,
+                'status' => $status,
+            ],
+        ]);
+    }
+
+    public function appUserDetail(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAdmin($request);
+
+        $data = $request->all();
+        $appUserId = isset($data['app_user_id']) ? trim((string)$data['app_user_id']) : '';
+
+        if ($appUserId === '') {
+            $this->json([
+                'success' => false,
+                'message' => 'The app_user_id field is required.',
+            ], 422);
+        }
+
+        $user = AppUser::getApiDetail($appUserId);
+        if (!$user) {
+            $this->json([
+                'success' => false,
+                'message' => 'User not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'data' => $this->formatAppUser($user),
+        ]);
+    }
+
+    public function createAppUser(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAdmin($request);
+
+        try {
+            $user = AppUser::createApi($this->withUploadedUserPhoto($request->all()));
+        } catch (\InvalidArgumentException $e) {
+            $this->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23000') {
+                $this->json([
+                    'success' => false,
+                    'message' => 'Email or username already exists.',
+                ], 409);
+            }
+            throw $e;
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'User created successfully.',
+            'data' => $this->formatAppUser($user),
+        ], 201);
+    }
+
+    public function updateAppUser(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAdmin($request);
+
+        $data = $this->withUploadedUserPhoto($request->all());
+        $appUserId = isset($data['app_user_id']) ? trim((string)$data['app_user_id']) : '';
+
+        if ($appUserId === '') {
+            $this->json([
+                'success' => false,
+                'message' => 'The app_user_id field is required.',
+            ], 422);
+        }
+
+        try {
+            $user = AppUser::updateApi($appUserId, $data);
+        } catch (\InvalidArgumentException $e) {
+            $this->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23000') {
+                $this->json([
+                    'success' => false,
+                    'message' => 'Email or username already exists.',
+                ], 409);
+            }
+            throw $e;
+        }
+
+        if (!$user) {
+            $this->json([
+                'success' => false,
+                'message' => 'User not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'User updated successfully.',
+            'data' => $this->formatAppUser($user),
+        ]);
+    }
+
+    public function updateAppUserStatus(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAdmin($request);
+
+        $data = $request->all();
+        $appUserId = isset($data['app_user_id']) ? trim((string)$data['app_user_id']) : '';
+        $status = isset($data['status']) ? trim((string)$data['status']) : '';
+
+        if ($appUserId === '' || $status === '') {
+            $this->json([
+                'success' => false,
+                'message' => 'The app_user_id and status fields are required.',
+            ], 422);
+        }
+
+        try {
+            $user = AppUser::updateApiStatus($appUserId, $status);
+        } catch (\InvalidArgumentException $e) {
+            $this->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+
+        if (!$user) {
+            $this->json([
+                'success' => false,
+                'message' => 'User not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'User status updated successfully.',
+            'data' => $this->formatAppUser($user),
+        ]);
+    }
+
+    public function deleteAppUser(Request $request): void {
+        $this->apiHeaders();
+        $this->requireApiAdmin($request);
+
+        $data = $request->all();
+        $appUserId = isset($data['app_user_id']) ? trim((string)$data['app_user_id']) : '';
+
+        if ($appUserId === '') {
+            $this->json([
+                'success' => false,
+                'message' => 'The app_user_id field is required.',
+            ], 422);
+        }
+
+        if ((string)Session::get('user_id') === $appUserId) {
+            $this->json([
+                'success' => false,
+                'message' => 'You cannot delete your own user account.',
+            ], 422);
+        }
+
+        if (!AppUser::deleteApi($appUserId)) {
+            $this->json([
+                'success' => false,
+                'message' => 'User not found.',
+            ], 404);
+        }
+
+        $this->json([
+            'success' => true,
+            'message' => 'User deleted successfully.',
         ]);
     }
 
@@ -571,6 +1157,17 @@ class ApiController extends Controller {
         Session::set('owner_email', $context['business_email']);
     }
 
+    private function requireApiAdmin(Request $request): void {
+        $this->requireApiAuth($request);
+
+        if (Session::get('user_type') !== 'admin') {
+            $this->json([
+                'success' => false,
+                'message' => 'Only admin users can manage app users.',
+            ], 403);
+        }
+    }
+
     private function formatRupees(float $amount): string {
         $amountString = (string)round($amount);
         $lastThree = substr($amountString, -3);
@@ -639,14 +1236,211 @@ class ApiController extends Controller {
         ];
     }
 
+    private function formatMenuItem(array $item): array {
+        $price = (float)$item['price'];
+        $discountPrice = $item['discount_price'] !== null ? (float)$item['discount_price'] : null;
+        $effectivePrice = $discountPrice ?? $price;
+
+        return [
+            'id' => $item['id'],
+            'category_id' => $item['category_id'],
+            'category_name' => $item['category_name'],
+            'name' => $item['name'],
+            'description' => $item['description'],
+            'price' => $price,
+            'price_label' => $this->formatRupees($price),
+            'discount_price' => $discountPrice,
+            'discount_price_label' => $discountPrice !== null ? $this->formatRupees($discountPrice) : null,
+            'effective_price' => $effectivePrice,
+            'effective_price_label' => $this->formatRupees($effectivePrice),
+            'dietary_type' => $item['dietary_type'],
+            'type' => $item['dietary_type'] === 'nonveg' ? 'non-veg' : $item['dietary_type'],
+            'spicy_level' => $item['spicy_level'],
+            'prep_time_minutes' => $item['prep_time_minutes'] !== null ? (int)$item['prep_time_minutes'] : null,
+            'cooking_time' => $item['prep_time_minutes'] !== null ? (int)$item['prep_time_minutes'] . ' mins' : null,
+            'image_url' => $item['image_url'],
+            'gallery_urls' => $this->decodeJsonArray($item['gallery_urls'] ?? null),
+            'variants' => [
+                [
+                    'id' => $item['id'],
+                    'label' => 'Regular',
+                    'price' => $effectivePrice,
+                    'price_label' => $this->formatRupees($effectivePrice),
+                ],
+            ],
+            'is_recommended' => (bool)$item['is_recommended'],
+            'is_best_seller' => (bool)$item['is_best_seller'],
+            'is_todays_special' => (bool)$item['is_todays_special'],
+            'is_available' => (bool)$item['is_available'],
+            'display_order' => (int)$item['display_order'],
+            'sku' => $item['sku'],
+            'barcode' => $item['barcode'],
+            'created_at' => $item['created_at'],
+            'updated_at' => $item['updated_at'],
+        ];
+    }
+
+    private function formatTableRoom(array $row): array {
+        $activeOrderTotal = $row['active_order_total'] !== null ? (float)$row['active_order_total'] : null;
+        $title = ucfirst((string)$row['type']) . ' ' . $row['number_label'];
+
+        return [
+            'id' => $row['id'],
+            'table_room_id' => $row['id'],
+            'type' => $row['type'],
+            'number_label' => $row['number_label'],
+            'name' => $title,
+            'status' => $row['status'],
+            'is_available' => $row['status'] === 'available',
+            'is_occupied' => $row['status'] === 'occupied',
+            'is_disabled' => $row['status'] === 'disabled',
+            'is_active' => $row['status'] === 'occupied' || $row['active_order_id'] !== null,
+            'active_order_id' => $row['active_order_id'],
+            'active_order_number' => $row['active_order_number'],
+            'active_order_status' => $row['active_order_status'],
+            'active_order_total' => $activeOrderTotal,
+            'active_order_total_label' => $activeOrderTotal !== null ? $this->formatRupees($activeOrderTotal) : null,
+            'created_at' => $row['created_at'],
+            'updated_at' => $row['updated_at'],
+        ];
+    }
+
+    private function formatQrCode(array $qr): array {
+        return [
+            'id' => $qr['id'],
+            'qr_id' => $qr['id'],
+            'business_id' => $qr['business_id'],
+            'table_room_id' => $qr['table_room_id'],
+            'encrypted_token' => $qr['encrypted_token'],
+            'qr_image_url' => $qr['qr_image_url'],
+            'is_active' => (bool)$qr['is_active'],
+            'revoked_at' => $qr['revoked_at'],
+            'service_unit_name' => $qr['service_unit_name'] ?? null,
+            'service_unit_type' => $qr['service_unit_type'] ?? null,
+            'service_unit_status' => $qr['service_unit_status'] ?? null,
+            'created_at' => $qr['created_at'],
+        ];
+    }
+
+    private function formatAppUser(array $user): array {
+        return [
+            'id' => $user['id'],
+            'app_user_id' => $user['id'],
+            'business_id' => $user['business_id'],
+            'role' => $user['role'],
+            'user_type' => $user['role'],
+            'name' => $user['name'],
+            'avatar' => $user['avatar'] ?? '',
+            'employee_id' => $user['employee_id'],
+            'username' => $user['username'],
+            'phone' => $user['phone'],
+            'email' => $user['email'],
+            'address' => $user['address'],
+            'photo_url' => $user['photo_url'],
+            'joining_date' => $user['joining_date'],
+            'status' => $user['status'],
+            'is_active' => $user['status'] === 'active',
+            'created_at' => $user['created_at'],
+            'updated_at' => $user['updated_at'],
+        ];
+    }
+
+    private function withUploadedMenuImage(array $data): array {
+        $file = $_FILES['image'] ?? $_FILES['menu_image'] ?? null;
+
+        if (!$file || !is_array($file) || ($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            return $data;
+        }
+
+        $data['image_url'] = $this->storeMenuImage($file);
+        return $data;
+    }
+
+    private function withUploadedUserPhoto(array $data): array {
+        $file = $_FILES['photo'] ?? $_FILES['profile_image'] ?? $_FILES['image'] ?? null;
+
+        if (!$file || !is_array($file) || ($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            return $data;
+        }
+
+        $data['photo_url'] = $this->storeUploadedImage($file, 'app-users');
+        return $data;
+    }
+
+    private function storeMenuImage(array $file): string {
+        return $this->storeUploadedImage($file, 'menu-items');
+    }
+
+    private function storeUploadedImage(array $file, string $folder): string {
+        if (($file['error'] ?? UPLOAD_ERR_OK) !== UPLOAD_ERR_OK) {
+            $this->json([
+                'success' => false,
+                'message' => 'Image upload failed.',
+            ], 422);
+        }
+
+        if (($file['size'] ?? 0) > 5 * 1024 * 1024) {
+            $this->json([
+                'success' => false,
+                'message' => 'Image size must be 5MB or less.',
+            ], 422);
+        }
+
+        $tmpName = (string)($file['tmp_name'] ?? '');
+        if ($tmpName === '' || !is_uploaded_file($tmpName)) {
+            $this->json([
+                'success' => false,
+                'message' => 'Invalid uploaded image.',
+            ], 422);
+        }
+
+        $mimeType = mime_content_type($tmpName);
+        $extensions = [
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/webp' => 'webp',
+        ];
+
+        if (!isset($extensions[$mimeType])) {
+            $this->json([
+                'success' => false,
+                'message' => 'Only JPG, PNG, and WEBP images are allowed.',
+            ], 422);
+        }
+
+        $uploadDir = __DIR__ . '/../../public/uploads/' . $folder;
+        if (!is_dir($uploadDir) && !mkdir($uploadDir, 0755, true)) {
+            $this->json([
+                'success' => false,
+                'message' => 'Unable to create upload directory.',
+            ], 500);
+        }
+
+        $filename = bin2hex(random_bytes(16)) . '.' . $extensions[$mimeType];
+        $destination = $uploadDir . '/' . $filename;
+
+        if (!move_uploaded_file($tmpName, $destination)) {
+            $this->json([
+                'success' => false,
+                'message' => 'Unable to save uploaded image.',
+            ], 500);
+        }
+
+        return '/uploads/' . $folder . '/' . $filename;
+    }
+
     private function resolveOrderIdFromRequest(array $data): string {
         $orderId = isset($data['order_id']) ? trim((string)$data['order_id']) : '';
 
-        if ($orderId !== '') {
+        if ($orderId !== '' && !str_starts_with(strtoupper($orderId), 'ORD-')) {
             return $orderId;
         }
 
         $orderNumber = isset($data['order_number']) ? trim((string)$data['order_number']) : '';
+        if ($orderNumber === '' && str_starts_with(strtoupper($orderId), 'ORD-')) {
+            $orderNumber = $orderId;
+        }
+
         if ($orderNumber === '' && isset($data['order_item_id'])) {
             $maybeOrderNumber = trim((string)$data['order_item_id']);
             if (str_starts_with(strtoupper($maybeOrderNumber), 'ORD-')) {

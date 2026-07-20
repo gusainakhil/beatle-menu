@@ -104,6 +104,43 @@ class QrCode extends Model {
         return $stmt->rowCount() > 0;
     }
 
+    public static function findActiveByTableRoom(string $tableRoomId): ?array {
+        $stmt = self::getDb()->prepare("
+            SELECT *
+            FROM qr_code
+            WHERE business_id = ? AND table_room_id = ? AND is_active = 1
+            ORDER BY created_at DESC
+            LIMIT 1
+        ");
+        $stmt->execute([self::getBusinessId(), $tableRoomId]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    public static function updateImage(string $qrId, string $imageUrl): ?array {
+        $stmt = self::getDb()->prepare("
+            UPDATE qr_code
+            SET qr_image_url = ?
+            WHERE id = ? AND business_id = ? AND is_active = 1
+        ");
+        $stmt->execute([$imageUrl, $qrId, self::getBusinessId()]);
+
+        $fetch = self::getDb()->prepare("
+            SELECT
+                q.*,
+                tr.number_label AS service_unit_name,
+                tr.type AS service_unit_type,
+                tr.status AS service_unit_status
+            FROM qr_code q
+            JOIN table_room tr ON q.table_room_id = tr.id
+            WHERE q.id = ? AND q.business_id = ?
+            LIMIT 1
+        ");
+        $fetch->execute([$qrId, self::getBusinessId()]);
+        $row = $fetch->fetch();
+        return $row ?: null;
+    }
+
     private static function makeToken(): string {
         return rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
     }
